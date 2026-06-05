@@ -7303,6 +7303,43 @@ static void update_core_pwr(const XlnxPsxcLpxSlcr *s,
     qemu_set_irq(pwr_ctrl->pwr, pwr);
 }
 
+/*
+ * Map core GPIO index n to its POWER_DWN_IRQ_STATUS bit mask.
+ * Cores 0,1 per cluster map linearly (bits 0-7); cores 2,3 use
+ * extension bits starting at bit 8 (cluster 0 only).
+ */
+static uint32_t power_dwn_core_bit(const XlnxPsxcLpxSlcr *s, int n)
+{
+    unsigned int core = n % s->num_apu_per_cluster;
+
+    if (core < 2) {
+        return R_POWER_DWN_IRQ_STATUS_APU0_CORE0_PWRDWN_MASK << n;
+    }
+
+    /* Extension bits only exist for cluster 0 */
+    g_assert(n / s->num_apu_per_cluster == 0);
+    return 1u << (R_POWER_DWN_IRQ_STATUS_APU0_CORE2_PWRDWN_SHIFT
+                  + (core - 2));
+}
+
+/*
+ * Map core GPIO index n to its WAKEUP0_IRQ_STATUS bit mask.
+ * Same layout as POWER_DWN: cores 0,1 linear (bits 0-7); cores 2,3
+ * use extension bits starting at bit 27 (cluster 0 only).
+ */
+static uint32_t wakeup0_core_bit(const XlnxPsxcLpxSlcr *s, int n)
+{
+    unsigned int core = n % s->num_apu_per_cluster;
+
+    if (core < 2) {
+        return R_WAKEUP0_IRQ_STATUS_APU0_CORE0_MASK << n;
+    }
+
+    /* Extension bits only exist for cluster 0 */
+    g_assert(n / s->num_apu_per_cluster == 0);
+    return 1u << (R_WAKEUP0_IRQ_STATUS_APU0_CORE2_SHIFT
+                  + (core - 2));
+}
 static void apu_standby_handler(void *opaque, int n, int level)
 {
     XlnxPsxcLpxSlcr *s = XILINX_PSXC_LPX_SLCR(opaque);
@@ -7363,7 +7400,7 @@ static void apu_core_pchan_wakeup_handler(void *opaque, int n, int level)
         return;
     }
 
-    s->wakeup0_irq.status |= R_WAKEUP0_IRQ_STATUS_APU0_CORE0_MASK << n;
+    s->wakeup0_irq.status |= wakeup0_core_bit(s, n);
     update_pwr_reset_irq(s);
 }
 
@@ -7375,8 +7412,8 @@ static void apu_core_pchan_poweroff_handler(void *opaque, int n, int level)
         return;
     }
 
-    s->power_dwn_irq.status |=
-        R_POWER_DWN_IRQ_STATUS_APU0_CORE0_PWRDWN_MASK << n;
+    s->power_dwn_irq.status |= power_dwn_core_bit(s, n);
+
     update_pwr_reset_irq(s);
 }
 
