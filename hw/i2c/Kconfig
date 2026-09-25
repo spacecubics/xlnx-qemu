@@ -46,6 +46,10 @@ config SI5341
     bool
     select I2C
 
+config SC_I2C
+    bool
+    select I2C
+
 config PMBUS
     bool
     select SMBUS
