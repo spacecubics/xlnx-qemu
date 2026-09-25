@@ -33,6 +33,7 @@
 #include "qemu/timer.h"
 #include "hw/irq.h"
 #include "migration/vmstate.h"
+#include "hw/fdt_generic_util.h"
 
 typedef struct riscv_aclint_mtimer_callback {
     RISCVAclintMTimerState *s;
@@ -274,6 +275,8 @@ static Property riscv_aclint_mtimer_properties[] = {
         aperture_size, RISCV_ACLINT_DEFAULT_MTIMER_SIZE),
     DEFINE_PROP_UINT32("timebase-freq", RISCVAclintMTimerState,
         timebase_freq, 0),
+    DEFINE_PROP_BOOL("provide-rdtime", RISCVAclintMTimerState,
+        provide_rdtime, false),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -291,14 +294,40 @@ static void riscv_aclint_mtimer_realize(DeviceState *dev, Error **errp)
 
     s->timers = g_new0(QEMUTimer *, s->num_harts);
     s->timecmp = g_new0(uint64_t, s->num_harts);
-    /* Claim timer interrupt bits */
     for (i = 0; i < s->num_harts; i++) {
         RISCVCPU *cpu = RISCV_CPU(cpu_by_arch_id(s->hartid_base + i));
+        riscv_aclint_mtimer_callback *cb;
+
+        /* Claim timer interrupt bits */
         if (riscv_cpu_claim_interrupts(cpu, MIP_MTIP) < 0) {
             error_report("MTIP already claimed");
             exit(1);
         }
+
+        if (s->provide_rdtime) {
+            riscv_cpu_set_rdtime_fn(&cpu->env, cpu_riscv_read_rtc, dev);
+        }
+
+        cb = g_new0(riscv_aclint_mtimer_callback, 1);
+        cb->s = s;
+        cb->num = i;
+        s->timers[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    &riscv_aclint_mtimer_cb, cb);
     }
+}
+
+static bool riscv_aclint_mtimer_ready_to_realize(DeviceState *dev)
+{
+    RISCVAclintMTimerState *s = RISCV_ACLINT_MTIMER(dev);
+    int i;
+
+    for (i = 0; i < s->num_harts; i++) {
+        if (cpu_by_arch_id(s->hartid_base + i) == NULL) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static void riscv_aclint_mtimer_reset_enter(Object *obj, ResetType type)
@@ -332,11 +361,13 @@ static const VMStateDescription vmstate_riscv_mtimer = {
 static void riscv_aclint_mtimer_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    FDTGenericHelperClass *fghc = FDT_GENERIC_HELPER_CLASS(klass);
     dc->realize = riscv_aclint_mtimer_realize;
     device_class_set_props(dc, riscv_aclint_mtimer_properties);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     rc->phases.enter = riscv_aclint_mtimer_reset_enter;
     dc->vmsd = &vmstate_riscv_mtimer;
+    fghc->ready_to_realize = riscv_aclint_mtimer_ready_to_realize;
 }
 
 static const TypeInfo riscv_aclint_mtimer_info = {
@@ -344,6 +375,10 @@ static const TypeInfo riscv_aclint_mtimer_info = {
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(RISCVAclintMTimerState),
     .class_init    = riscv_aclint_mtimer_class_init,
+    .interfaces    = (InterfaceInfo []) {
+        { TYPE_FDT_GENERIC_HELPER },
+        { },
+    },
 };
 
 /*
@@ -356,7 +391,6 @@ DeviceState *riscv_aclint_mtimer_create(hwaddr addr, hwaddr size,
 {
     int i;
     DeviceState *dev = qdev_new(TYPE_RISCV_ACLINT_MTIMER);
-    RISCVAclintMTimerState *s = RISCV_ACLINT_MTIMER(dev);
 
     assert(num_harts <= RISCV_ACLINT_MAX_HARTS);
     assert(!(addr & 0x7));
@@ -369,32 +403,15 @@ DeviceState *riscv_aclint_mtimer_create(hwaddr addr, hwaddr size,
     qdev_prop_set_uint32(dev, "time-base", time_base);
     qdev_prop_set_uint32(dev, "aperture-size", size);
     qdev_prop_set_uint32(dev, "timebase-freq", timebase_freq);
+    qdev_prop_set_bit(dev, "provide-rdtime", provide_rdtime);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, addr);
 
     for (i = 0; i < num_harts; i++) {
         CPUState *cpu = cpu_by_arch_id(hartid_base + i);
-        RISCVCPU *rvcpu = RISCV_CPU(cpu);
-        CPURISCVState *env = cpu ? cpu_env(cpu) : NULL;
-        riscv_aclint_mtimer_callback *cb =
-            g_new0(riscv_aclint_mtimer_callback, 1);
-
-        if (!env) {
-            g_free(cb);
-            continue;
-        }
-        if (provide_rdtime) {
-            riscv_cpu_set_rdtime_fn(env, cpu_riscv_read_rtc, dev);
-        }
-
-        cb->s = s;
-        cb->num = i;
-        s->timers[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                  &riscv_aclint_mtimer_cb, cb);
-        s->timecmp[i] = 0;
 
         qdev_connect_gpio_out(dev, i,
-                              qdev_get_gpio_in(DEVICE(rvcpu), IRQ_M_TIMER));
+                              qdev_get_gpio_in(DEVICE(cpu), IRQ_M_TIMER));
     }
 
     return dev;
