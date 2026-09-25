@@ -348,3 +348,10 @@ xlnx_versal_pmc_crp_soft_reset(const char *subsys, bool val) "%s: %d"
 # xilinx-psxc-rpu-cluster-core.c
 xilinx_psxc_rpu_cluster_core_read(uint64_t addr, uint64_t value, unsigned int size) "addr: 0x%" PRIx64 " value: 0x%" PRIx64 " size: %u"
 xilinx_psxc_rpu_cluster_core_write(uint64_t addr, uint64_t value, unsigned int size) "addr: 0x%" PRIx64 " value: 0x%" PRIx64 " size: %u"
+
+# sc_system.c
+sc_system_read(uint64_t addr, uint32_t value) "addr 0x%" PRIx64 " value 0x%08" PRIx32
+sc_system_write(uint64_t addr, uint32_t value) "addr 0x%" PRIx64 " value 0x%08" PRIx32
+sc_system_led(bool green, bool red) "green %d red %d"
+sc_system_keep_alive(uint32_t level) "level %" PRIu32
+sc_system_boot_mem_sel(uint32_t port) "MRAM port %" PRIu32

@@ -209,4 +209,7 @@ config IOSB
 config XLNX_VERSAL_TRNG
     bool
 
+config SC_SYSTEM
+    bool
+
 source macio/Kconfig
