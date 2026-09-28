@@ -28,3 +28,4 @@ config STM32F2XX_SPI
 
 config SC_SPI_TARGET
     bool
+    select REMOTE_PORT

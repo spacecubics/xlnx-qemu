@@ -12,11 +12,15 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
+#include "hw/remote-port.h"
+#include "hw/remote-port-device.h"
+#include "hw/remote-port-proto.h"
 #include "hw/ssi/sc_spi_target.h"
 #include "migration/vmstate.h"
 #include "trace.h"
@@ -178,42 +182,71 @@ void sc_spi_target_set_cs(SCSPITargetState *s, uint8_t cs)
     }
 }
 
-uint8_t sc_spi_target_transfer(SCSPITargetState *s, uint8_t mosi)
+/* The shift logic runs while a chip select is asserted and the IP enabled */
+static bool sc_spi_target_shifting(SCSPITargetState *s)
+{
+    return s->cs && sc_spi_target_enabled(s);
+}
+
+static void sc_spi_target_start_frame(SCSPITargetState *s)
+{
+    if (s->frame_active) {
+        return;
+    }
+
+    s->frame_active = true;
+    s->frame_bytes = 0;
+    if (sc_spi_target_ip_valid(s)) {
+        s->cs_det[s->spi_buf] = s->cs;
+    }
+}
+
+/* First SCK edge of a byte: the MSB of the MISO byte is driven */
+static uint8_t sc_spi_target_shift_out(SCSPITargetState *s)
 {
     uint8_t *tx = s->tx_buf[s->spi_buf];
-    uint8_t *rx = s->rx_buf[s->spi_buf];
-    uint8_t index;
     uint8_t miso;
 
-    if (!s->cs || !sc_spi_target_enabled(s)) {
+    if (!sc_spi_target_shifting(s)) {
         /*
          * The shift logic is held at the first bit: every SCK edge
-         * shifts out the MSB of the first TX byte and samples MOSI into
-         * the MSB of the first RX byte.
+         * shifts out the MSB of the first TX byte.
          */
         miso = (tx[0] & 0x80) ? 0xFF : 0x00;
-        rx[0] = deposit32(rx[0], 7, 1, mosi & 1);
-        trace_sc_spi_target_transfer(s->spi_buf, 0, mosi, miso);
+        trace_sc_spi_target_shift_out(s->spi_buf, 0, miso);
         return miso;
     }
 
-    if (!s->frame_active) {
-        s->frame_active = true;
-        s->frame_bytes = 0;
-        if (sc_spi_target_ip_valid(s)) {
-            s->cs_det[s->spi_buf] = s->cs;
-        }
-    }
+    sc_spi_target_start_frame(s);
 
-    index = s->frame_bytes;
-    if (index < s->max_frame_size) {
-        miso = tx[index];
-        rx[index] = mosi;
+    if (s->frame_bytes < s->max_frame_size) {
+        miso = tx[s->frame_bytes];
     } else {
         /* MISO keeps the last bit shifted out */
         miso = (tx[s->max_frame_size - 1] & 1) ? 0xFF : 0x00;
     }
-    trace_sc_spi_target_transfer(s->spi_buf, index, mosi, miso);
+    trace_sc_spi_target_shift_out(s->spi_buf, s->frame_bytes, miso);
+    return miso;
+}
+
+/* Last SCK edge of a byte: the MOSI byte is complete */
+static void sc_spi_target_shift_in(SCSPITargetState *s, uint8_t mosi)
+{
+    uint8_t *rx = s->rx_buf[s->spi_buf];
+
+    if (!sc_spi_target_shifting(s)) {
+        /* Every SCK edge samples MOSI into the MSB of the first RX byte */
+        rx[0] = deposit32(rx[0], 7, 1, mosi & 1);
+        trace_sc_spi_target_shift_in(s->spi_buf, 0, mosi);
+        return;
+    }
+
+    sc_spi_target_start_frame(s);
+
+    if (s->frame_bytes < s->max_frame_size) {
+        rx[s->frame_bytes] = mosi;
+    }
+    trace_sc_spi_target_shift_in(s->spi_buf, s->frame_bytes, mosi);
 
     if (s->frame_bytes < SC_SPI_TARGET_MAX_BYTE_COUNT) {
         s->frame_bytes++;
@@ -221,7 +254,128 @@ uint8_t sc_spi_target_transfer(SCSPITargetState *s, uint8_t mosi)
     }
 
     sc_spi_target_update(s);
+}
+
+uint8_t sc_spi_target_transfer(SCSPITargetState *s, uint8_t mosi)
+{
+    uint8_t miso = sc_spi_target_shift_out(s);
+
+    sc_spi_target_shift_in(s, mosi);
     return miso;
+}
+
+/*
+ * Remote-port SSI transfers are shifted at the SCK frequency in virtual
+ * time and answered once the last byte is complete. The controller
+ * waits for the answer, so the CPU can react to interrupts in the
+ * middle of a frame, as on the real bus.
+ */
+typedef struct SCSPITargetXfer {
+    uint32_t id;
+    uint32_t dev;
+    uint32_t flags;
+    uint32_t cs;
+    uint32_t len;
+    uint32_t pos;
+    uint8_t *mosi;
+    uint8_t *miso;
+    uint8_t data[];
+} SCSPITargetXfer;
+
+static void sc_spi_target_xfer_respond(SCSPITargetState *s,
+                                       SCSPITargetXfer *xfer)
+{
+    size_t size = sizeof(struct rp_pkt_ssi) + xfer->len;
+    g_autofree struct rp_pkt_ssi *pkt = g_malloc0(size);
+
+    trace_sc_spi_target_xfer_done(xfer->id, xfer->len);
+
+    if (xfer->flags & RP_PKT_FLAGS_posted) {
+        return;
+    }
+
+    rp_encode_ssi(xfer->id, xfer->dev, pkt, rp_normalized_vmclk(s->rp),
+                  xfer->cs, xfer->len, xfer->flags | RP_PKT_FLAGS_response);
+    memcpy(rp_ssi_dataptr(pkt), xfer->miso, xfer->len);
+    rp_write(s->rp, pkt, size);
+}
+
+static int64_t sc_spi_target_byte_time_ns(SCSPITargetState *s)
+{
+    return muldiv64(8, NANOSECONDS_PER_SECOND, s->sck_frequency);
+}
+
+/* Start the transfers at the head of the queue until one takes time */
+static void sc_spi_target_xfer_start(SCSPITargetState *s)
+{
+    SCSPITargetXfer *xfer;
+
+    while ((xfer = g_queue_peek_head(&s->xfers))) {
+        trace_sc_spi_target_xfer_start(xfer->id, xfer->cs, xfer->len);
+        sc_spi_target_set_cs(s, xfer->cs);
+
+        if (xfer->len && s->sck_frequency) {
+            xfer->miso[0] = sc_spi_target_shift_out(s);
+            timer_mod(s->xfer_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                     sc_spi_target_byte_time_ns(s));
+            return;
+        }
+
+        for (xfer->pos = 0; xfer->pos < xfer->len; xfer->pos++) {
+            xfer->miso[xfer->pos] =
+                sc_spi_target_transfer(s, xfer->mosi[xfer->pos]);
+        }
+        sc_spi_target_xfer_respond(s, xfer);
+        g_free(g_queue_pop_head(&s->xfers));
+    }
+}
+
+static void sc_spi_target_xfer_timer_cb(void *opaque)
+{
+    SCSPITargetState *s = opaque;
+    SCSPITargetXfer *xfer = g_queue_peek_head(&s->xfers);
+
+    sc_spi_target_shift_in(s, xfer->mosi[xfer->pos++]);
+
+    if (xfer->pos < xfer->len) {
+        xfer->miso[xfer->pos] = sc_spi_target_shift_out(s);
+        timer_mod(s->xfer_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                 sc_spi_target_byte_time_ns(s));
+        return;
+    }
+
+    sc_spi_target_xfer_respond(s, xfer);
+    g_free(g_queue_pop_head(&s->xfers));
+    sc_spi_target_xfer_start(s);
+}
+
+static void sc_spi_target_rp_ssi(RemotePortDevice *rpdev, struct rp_pkt *pkt)
+{
+    SCSPITargetState *s = SC_SPI_TARGET(rpdev);
+    uint32_t avail = pkt->hdr.len - (sizeof(pkt->ssi) - sizeof(pkt->hdr));
+    uint32_t len = pkt->ssi.len;
+    SCSPITargetXfer *xfer;
+
+    if (len > avail) {
+        error_report("%s: SSI packet with %" PRIu32 " of %" PRIu32 " bytes",
+                     object_get_canonical_path(OBJECT(s)), avail, len);
+        len = avail;
+    }
+
+    xfer = g_malloc0(sizeof(*xfer) + 2 * len);
+    xfer->id = pkt->hdr.id;
+    xfer->dev = pkt->hdr.dev;
+    xfer->flags = pkt->hdr.flags;
+    xfer->cs = pkt->ssi.cs;
+    xfer->len = len;
+    xfer->mosi = xfer->data;
+    xfer->miso = xfer->data + len;
+    memcpy(xfer->mosi, rp_ssi_dataptr(&pkt->ssi), len);
+
+    g_queue_push_tail(&s->xfers, xfer);
+    if (g_queue_get_length(&s->xfers) == 1) {
+        sc_spi_target_xfer_start(s);
+    }
 }
 
 static bool sc_spi_target_buf_index(SCSPITargetState *s, hwaddr addr,
@@ -399,6 +553,10 @@ static void sc_spi_target_realize(DeviceState *dev, Error **errp)
 {
     SCSPITargetState *s = SC_SPI_TARGET(dev);
 
+    s->xfer_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                 sc_spi_target_xfer_timer_cb, s);
+    g_queue_init(&s->xfers);
+
     if (s->max_frame_size < 1 ||
         s->max_frame_size > SC_SPI_TARGET_MAX_FRAME_SIZE) {
         error_setg(errp, "max-frame-size must be between 1 and %d",
@@ -428,6 +586,12 @@ static void sc_spi_target_init(Object *obj)
     /* Port N bit M is GPO line N * 4 + M */
     qdev_init_gpio_out_named(DEVICE(obj), s->gpo_out, "gpo",
                              ARRAY_SIZE(s->gpo_out));
+
+    /* SPI controller on the other side of a remote-port link */
+    object_property_add_link(obj, "rp-adaptor0", "remote-port",
+                             (Object **)&s->rp,
+                             qdev_prop_allow_set_link,
+                             OBJ_PROP_LINK_STRONG);
 }
 
 static const VMStateDescription vmstate_sc_spi_target = {
@@ -467,13 +631,18 @@ static Property sc_spi_target_props[] = {
                        SC_SPI_TARGET_MAX_FRAME_SIZE),
     DEFINE_PROP_UINT32("gpo0-init", SCSPITargetState, gpo_init[0], 0),
     DEFINE_PROP_UINT32("gpo1-init", SCSPITargetState, gpo_init[1], 0),
+    /* Remote-port transfers are shifted at this SCK rate, 0 is immediate */
+    DEFINE_PROP_UINT32("sck-frequency", SCSPITargetState, sck_frequency,
+                       100000),
     DEFINE_PROP_END_OF_LIST(),
 };
 
 static void sc_spi_target_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
+    RemotePortDeviceClass *rpdc = REMOTE_PORT_DEVICE_CLASS(oc);
 
+    rpdc->ops[RP_CMD_ssi] = sc_spi_target_rp_ssi;
     dc->realize = sc_spi_target_realize;
     dc->reset = sc_spi_target_reset;
     dc->vmsd = &vmstate_sc_spi_target;
@@ -486,6 +655,10 @@ static const TypeInfo sc_spi_target_info = {
     .instance_size = sizeof(SCSPITargetState),
     .instance_init = sc_spi_target_init,
     .class_init = sc_spi_target_class_init,
+    .interfaces = (InterfaceInfo[]) {
+        { TYPE_REMOTE_PORT_DEVICE },
+        { },
+    },
 };
 
 static void sc_spi_target_register_types(void)

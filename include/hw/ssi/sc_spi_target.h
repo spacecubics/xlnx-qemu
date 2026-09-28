@@ -8,6 +8,7 @@
 #define HW_SSI_SC_SPI_TARGET_H
 
 #include "hw/sysbus.h"
+#include "qemu/timer.h"
 #include "qom/object.h"
 
 #define TYPE_SC_SPI_TARGET "sc.spi-target"
@@ -46,6 +47,12 @@ struct SCSPITargetState {
     uint8_t cs_det[2];
     uint8_t cpu_buf;
     uint8_t spi_buf;
+
+    /* Remote-port link to the SPI controller */
+    struct RemotePort *rp;
+    uint32_t sck_frequency;
+    QEMUTimer *xfer_timer;
+    GQueue xfers;
 
     /* SPI side */
     uint8_t cs;
