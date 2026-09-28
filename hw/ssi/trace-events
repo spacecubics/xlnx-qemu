@@ -32,3 +32,10 @@ ibex_spi_host_reset(const char *msg) "%s"
 ibex_spi_host_transfer(uint32_t tx_data, uint32_t rx_data) "tx_data: 0x%" PRIx32 " rx_data: @0x%" PRIx32
 ibex_spi_host_write(uint64_t addr, uint32_t size, uint64_t data) "@0x%" PRIx64 " size %u: 0x%" PRIx64
 ibex_spi_host_read(uint64_t addr, uint32_t size) "@0x%" PRIx64 " size %u:"
+
+# sc_spi_target.c
+sc_spi_target_reg_read(uint64_t addr, uint32_t value) "addr 0x%" PRIx64 " value 0x%08" PRIx32
+sc_spi_target_reg_write(uint64_t addr, uint32_t value) "addr 0x%" PRIx64 " value 0x%08" PRIx32
+sc_spi_target_set_cs(uint8_t cs) "cs 0x%x"
+sc_spi_target_transfer(uint8_t buf, uint8_t index, uint8_t mosi, uint8_t miso) "buf %u index %u mosi 0x%02x miso 0x%02x"
+sc_spi_target_frame_end(uint8_t buf, uint8_t bytes) "buf %u bytes %u"

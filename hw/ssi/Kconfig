@@ -25,3 +25,6 @@ config XILINX_AXIQSPI
 config STM32F2XX_SPI
     bool
     select SSI
+
+config SC_SPI_TARGET
+    bool
