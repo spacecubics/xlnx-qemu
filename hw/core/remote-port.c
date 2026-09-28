@@ -304,6 +304,7 @@ static void rp_say_hello(RemotePort *s)
         CAP_BUSACCESS_EXT_BYTE_EN,
         CAP_WIRE_POSTED_UPDATES,
         CAP_ATS,
+        CAP_SSI,
     };
     size_t len;
 
@@ -658,6 +659,7 @@ static bool rp_pt_process_pkt(RemotePort *s, RemotePortDynPkt *dpkt)
     case RP_CMD_interrupt:
     case RP_CMD_ats_req:
     case RP_CMD_ats_inv:
+    case RP_CMD_ssi:
         rp_pt_handover_pkt(s, dpkt);
         break;
     default:

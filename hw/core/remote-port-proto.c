@@ -100,6 +100,7 @@ static const char *rp_cmd_names[RP_CMD_max + 1] = {
     [RP_CMD_sync] = "sync",
     [RP_CMD_ats_req] = "ats_request",
     [RP_CMD_ats_inv] = "ats_invalidation",
+    [RP_CMD_ssi] = "ssi",
 };
 
 const char *rp_cmd_to_string(enum rp_cmd cmd)
@@ -206,6 +207,13 @@ int rp_decode_payload(struct rp_pkt *pkt)
         pkt->ats.addr = be64toh(pkt->ats.addr);
         pkt->ats.len = be64toh(pkt->ats.len);
         pkt->ats.result = be32toh(pkt->ats.result);
+        break;
+    case RP_CMD_ssi:
+        assert(pkt->hdr.len >= sizeof pkt->ssi - sizeof pkt->hdr);
+        pkt->ssi.timestamp = be64toh(pkt->ssi.timestamp);
+        pkt->ssi.cs = be32toh(pkt->ssi.cs);
+        pkt->ssi.len = be32toh(pkt->ssi.len);
+        used += pkt->hdr.len;
         break;
     default:
         break;
@@ -427,6 +435,17 @@ size_t rp_encode_ats_inv(uint32_t id, uint32_t dev,
                                 addr, len, result, flags);
 }
 
+size_t rp_encode_ssi(uint32_t id, uint32_t dev, struct rp_pkt_ssi *pkt,
+                     int64_t clk, uint32_t cs, uint32_t len, uint32_t flags)
+{
+    rp_encode_hdr(&pkt->hdr, RP_CMD_ssi, id, dev,
+                  sizeof *pkt - sizeof pkt->hdr + len, flags);
+    pkt->timestamp = htobe64(clk);
+    pkt->cs = htobe32(cs);
+    pkt->len = htobe32(len);
+    return sizeof *pkt;
+}
+
 static size_t rp_encode_sync_common(uint32_t id, uint32_t dev,
                                     struct rp_pkt_sync *pkt,
                                     int64_t clk, uint32_t flags)
@@ -475,6 +494,9 @@ void rp_process_caps(struct rp_peer_state *peer,
             break;
         case CAP_ATS:
             peer->caps.ats = true;
+            break;
+        case CAP_SSI:
+            peer->caps.ssi = true;
             break;
         }
     }

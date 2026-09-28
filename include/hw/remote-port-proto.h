@@ -71,7 +71,8 @@ enum rp_cmd {
     RP_CMD_sync        = 6,
     RP_CMD_ats_req     = 7,
     RP_CMD_ats_inv     = 8,
-    RP_CMD_max         = 8
+    RP_CMD_ssi         = 9,
+    RP_CMD_max         = 9
 };
 
 enum {
@@ -139,6 +140,7 @@ enum {
     CAP_WIRE_POSTED_UPDATES = 3,
 
     CAP_ATS = 4, /* Address translation services */
+    CAP_SSI = 5, /* SPI transfers */
 };
 
 struct rp_pkt_hello {
@@ -280,6 +282,20 @@ struct rp_pkt_ats {
     uint64_t reserved3;
 } PACKED;
 
+/*
+ * A full duplex SPI transfer. The controller sends the chip select
+ * mask it asserts (active high, 0 releases all chip selects) and len
+ * bytes to shift out, directly following the packet. The response
+ * carries the len bytes shifted in. A transfer with len 0 only updates
+ * the chip selects.
+ */
+struct rp_pkt_ssi {
+    struct rp_pkt_hdr hdr;
+    uint64_t timestamp;
+    uint32_t cs;
+    uint32_t len;
+} PACKED;
+
 struct rp_pkt {
     union {
         struct rp_pkt_hdr hdr;
@@ -289,6 +305,7 @@ struct rp_pkt {
         struct rp_pkt_interrupt interrupt;
         struct rp_pkt_sync sync;
         struct rp_pkt_ats ats;
+        struct rp_pkt_ssi ssi;
     };
 };
 
@@ -305,6 +322,7 @@ struct rp_peer_state {
         bool busaccess_ext_byte_en;
         bool wire_posted_updates;
         bool ats;
+        bool ssi;
     } caps;
 
     /* Used to normalize our clk.  */
@@ -496,6 +514,15 @@ size_t rp_encode_ats_inv(uint32_t id, uint32_t dev,
                          struct rp_pkt_ats *pkt,
                          int64_t clk, uint64_t attr, uint64_t addr,
                          uint64_t size, uint64_t result, uint32_t flags);
+
+/* The data of an SSI packet directly follows it.  */
+static inline uint8_t *rp_ssi_dataptr(struct rp_pkt_ssi *pkt)
+{
+    return (uint8_t *) (pkt + 1);
+}
+
+size_t rp_encode_ssi(uint32_t id, uint32_t dev, struct rp_pkt_ssi *pkt,
+                     int64_t clk, uint32_t cs, uint32_t len, uint32_t flags);
 
 void rp_process_caps(struct rp_peer_state *peer,
                      void *caps, size_t caps_len);
