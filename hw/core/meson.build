@@ -69,6 +69,10 @@ specific_ss.add(when: 'CONFIG_REMOTE_PORT', if_true: files(
   'remote-port-ats.c',
 ))
 
+specific_ss.add(when: ['CONFIG_REMOTE_PORT', 'CONFIG_SSI'], if_true: files(
+  'remote-port-ssi.c',
+))
+
 specific_ss.add(when: 'CONFIG_REMOTE_PORT_PCI', if_true: files(
   'remote-port-pci-adaptor.c',
   'remote-port-pci-device.c',
