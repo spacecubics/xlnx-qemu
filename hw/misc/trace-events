@@ -355,3 +355,12 @@ sc_system_write(uint64_t addr, uint32_t value) "addr 0x%" PRIx64 " value 0x%08" 
 sc_system_led(bool green, bool red) "green %d red %d"
 sc_system_keep_alive(uint32_t level) "level %" PRIu32
 sc_system_boot_mem_sel(uint32_t port) "MRAM port %" PRIu32
+
+# sc_mppc.c
+sc_mppc_read(uint64_t addr, uint32_t value) "addr 0x%" PRIx64 " value 0x%08" PRIx32
+sc_mppc_write(uint64_t addr, uint32_t value) "addr 0x%" PRIx64 " value 0x%08" PRIx32
+sc_mppc_power_enable(const char *domain, bool enable) "%s enable %d"
+sc_mppc_power_status(uint32_t status) "status 0x%02" PRIx32
+sc_mppc_power_error(uint32_t rails) "rails 0x%02" PRIx32 " dropped out"
+sc_mppc_main_reset(uint32_t level) "level %" PRIu32
+sc_mppc_power_cycle_req(int level) "level %d"

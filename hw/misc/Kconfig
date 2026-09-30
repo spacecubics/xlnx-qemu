@@ -212,4 +212,7 @@ config XLNX_VERSAL_TRNG
 config SC_SYSTEM
     bool
 
+config SC_MPPC
+    bool
+
 source macio/Kconfig
