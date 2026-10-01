@@ -1,6 +1,10 @@
 /*
  * Space Cubics SC-OBC Module V1 Safety Processor System Register
  *
+ * In the device tree the outputs are GPIOs 0-1 (green and red LED),
+ * 2 (keep-alive) and 3 (boot-mem-sel, the Boot Memory Select line to the
+ * main processor boot flash switch).
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -11,6 +15,7 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
+#include "hw/fdt_generic_util.h"
 #include "migration/vmstate.h"
 #include "trace.h"
 
@@ -193,6 +198,19 @@ static const VMStateDescription vmstate_sc_system = {
     }
 };
 
+static const FDTGenericGPIOSet sc_system_controller_gpios[] = {
+    {
+        .names = &fdt_generic_gpio_name_set_gpio,
+        .gpios = (FDTGenericGPIOConnection[]) {
+            { .name = "led", .fdt_index = 0, .range = 2 },
+            { .name = "keep-alive", .fdt_index = 2 },
+            { .name = "boot-mem-sel", .fdt_index = 3 },
+            { },
+        },
+    },
+    { },
+};
+
 static Property sc_system_props[] = {
     DEFINE_PROP_UINT32("ip-version", SCSystemState, ip_version, 0),
     DEFINE_PROP_UINT32("git-hash", SCSystemState, git_hash, 0),
@@ -203,10 +221,12 @@ static Property sc_system_props[] = {
 static void sc_system_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
+    FDTGenericGPIOClass *fggc = FDT_GENERIC_GPIO_CLASS(oc);
 
     dc->reset = sc_system_reset;
     dc->vmsd = &vmstate_sc_system;
     device_class_set_props(dc, sc_system_props);
+    fggc->controller_gpios = sc_system_controller_gpios;
 }
 
 static const TypeInfo sc_system_info = {
@@ -215,6 +235,10 @@ static const TypeInfo sc_system_info = {
     .instance_size = sizeof(SCSystemState),
     .instance_init = sc_system_init,
     .class_init = sc_system_class_init,
+    .interfaces = (InterfaceInfo[]) {
+        { TYPE_FDT_GENERIC_GPIO },
+        { }
+    },
 };
 
 static void sc_system_register_types(void)
