@@ -9,6 +9,17 @@
  *
  *   qom-set /machine/.../mppc power-fault 0x8     (FPD rail fails)
  *
+ * The reset is also available as "main-por-b", the level of the Versal
+ * POR_B pin it drives on the board. In the device tree the outputs are
+ * GPIOs 0-4 (power enables), 5 (main-reset) and 6 (main-por-b), and GPIO
+ * input 0 is the Power Cycle Request from PMC MIO28 of the main processor.
+ *
+ * While the reset is asserted the Versal MIO are not driven and the pull
+ * down on the safety processor side holds Power Cycle Request low. QEMU
+ * does not reset the GPIO pins of the main processor on POR, so drop the
+ * request here and ignore it until the reset is released. It is raised
+ * again once software on the main processor drives MIO28.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -20,6 +31,7 @@
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
 #include "hw/registerfields.h"
+#include "hw/fdt_generic_util.h"
 #include "migration/vmstate.h"
 #include "trace.h"
 
@@ -121,6 +133,7 @@ struct SCMPPCState {
     MemoryRegion mmio;
     qemu_irq irq;
     qemu_irq main_reset;
+    qemu_irq main_por_b;
     qemu_irq power_enable[SC_MPPC_NUM_DOMAINS];
 
     /* Hardwired values, configured per board */
@@ -159,12 +172,22 @@ static void sc_mppc_update_irq(SCMPPCState *s)
     qemu_set_irq(s->irq, !!(s->intsts & s->intenb));
 }
 
+static bool sc_mppc_main_reset_asserted(SCMPPCState *s)
+{
+    return FIELD_EX32(s->main_reset_ctrl, MAIN_RESET, ASSERT);
+}
+
 static void sc_mppc_update(SCMPPCState *s)
 {
     uint32_t rails = sc_mppc_rails_enabled(s);
     uint32_t status = rails & ~s->power_fault;
     uint32_t dropped = s->power_status & ~status & rails;
     int i;
+
+    /* MIO28 of the main processor is not driven while it is in reset */
+    if (sc_mppc_main_reset_asserted(s)) {
+        s->power_cycle_req = false;
+    }
 
     if (dropped) {
         trace_sc_mppc_power_error(dropped);
@@ -178,8 +201,8 @@ static void sc_mppc_update(SCMPPCState *s)
     for (i = 0; i < SC_MPPC_NUM_DOMAINS; i++) {
         qemu_set_irq(s->power_enable[i], !!(s->enabled & BIT(i)));
     }
-    qemu_set_irq(s->main_reset,
-                 FIELD_EX32(s->main_reset_ctrl, MAIN_RESET, ASSERT));
+    qemu_set_irq(s->main_reset, sc_mppc_main_reset_asserted(s));
+    qemu_set_irq(s->main_por_b, !sc_mppc_main_reset_asserted(s));
     sc_mppc_update_irq(s);
 }
 
@@ -330,6 +353,9 @@ static void sc_mppc_power_cycle_req(void *opaque, int n, int level)
     SCMPPCState *s = opaque;
 
     trace_sc_mppc_power_cycle_req(level);
+    if (sc_mppc_main_reset_asserted(s)) {
+        return;
+    }
     if (level && !s->power_cycle_req) {
         s->intsts |= R_INT_POWER_CYCLE_REQ_MASK;
     }
@@ -386,6 +412,7 @@ static void sc_mppc_init(Object *obj)
     qdev_init_gpio_out_named(dev, s->power_enable, "power-enable",
                              SC_MPPC_NUM_DOMAINS);
     qdev_init_gpio_out_named(dev, &s->main_reset, "main-reset", 1);
+    qdev_init_gpio_out_named(dev, &s->main_por_b, "main-por-b", 1);
     qdev_init_gpio_in_named(dev, sc_mppc_power_cycle_req,
                             "power-cycle-req", 1);
 
@@ -409,6 +436,31 @@ static const VMStateDescription vmstate_sc_mppc = {
     }
 };
 
+static const FDTGenericGPIOSet sc_mppc_controller_gpios[] = {
+    {
+        .names = &fdt_generic_gpio_name_set_gpio,
+        .gpios = (FDTGenericGPIOConnection[]) {
+            { .name = "power-enable", .fdt_index = 0,
+              .range = SC_MPPC_NUM_DOMAINS },
+            { .name = "main-reset", .fdt_index = SC_MPPC_NUM_DOMAINS },
+            { .name = "main-por-b", .fdt_index = SC_MPPC_NUM_DOMAINS + 1 },
+            { },
+        },
+    },
+    { },
+};
+
+static const FDTGenericGPIOSet sc_mppc_client_gpios[] = {
+    {
+        .names = &fdt_generic_gpio_name_set_gpio,
+        .gpios = (FDTGenericGPIOConnection[]) {
+            { .name = "power-cycle-req", .fdt_index = 0 },
+            { },
+        },
+    },
+    { },
+};
+
 static Property sc_mppc_props[] = {
     DEFINE_PROP_UINT32("ip-version", SCMPPCState, ip_version, 0),
     DEFINE_PROP_END_OF_LIST(),
@@ -417,10 +469,13 @@ static Property sc_mppc_props[] = {
 static void sc_mppc_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
+    FDTGenericGPIOClass *fggc = FDT_GENERIC_GPIO_CLASS(oc);
 
     dc->reset = sc_mppc_reset;
     dc->vmsd = &vmstate_sc_mppc;
     device_class_set_props(dc, sc_mppc_props);
+    fggc->controller_gpios = sc_mppc_controller_gpios;
+    fggc->client_gpios = sc_mppc_client_gpios;
 }
 
 static const TypeInfo sc_mppc_info = {
@@ -429,6 +484,10 @@ static const TypeInfo sc_mppc_info = {
     .instance_size = sizeof(SCMPPCState),
     .instance_init = sc_mppc_init,
     .class_init = sc_mppc_class_init,
+    .interfaces = (InterfaceInfo[]) {
+        { TYPE_FDT_GENERIC_GPIO },
+        { }
+    },
 };
 
 static void sc_mppc_register_types(void)
