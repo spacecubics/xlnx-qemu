@@ -340,6 +340,20 @@ static void gpio_update_pins(XlnxZynqmpGPIO *s, int bank, int offset, int width,
     }
 }
 
+/*
+ * Optional power-on reset input, the level of the POR_B pin. Resets after
+ * the first one keep the pins, as the pins stay alive across warm resets.
+ * A board that models POR asserts this, so the next reset restores them.
+ */
+static void zynqmp_gpio_por_b_handler(void *opaque, int n, int level)
+{
+    XlnxZynqmpGPIO *s = XLNX_ZYNQMP_GPIO(opaque);
+
+    if (!level) {
+        s->por_done = false;
+    }
+}
+
 static void zynqmp_gpio_in_handler(void *opaque, int n, int level)
 {
     XlnxZynqmpGPIO *s = XLNX_ZYNQMP_GPIO(opaque);
@@ -814,6 +828,8 @@ static void gpio_realize(DeviceState *dev, Error **errp)
     qdev_init_gpio_in_named(dev, zynqmp_gpio_in_handler, gpios_name,
                             ZYNQMP_NUM_GPIOS);
     g_free((gpointer)gpios_name);
+
+    qdev_init_gpio_in_named(dev, zynqmp_gpio_por_b_handler, "por_b", 1);
 }
 
 static void gpio_init(Object *obj)
@@ -868,6 +884,17 @@ static const FDTGenericGPIOSet xlnx_gpio_client_gpios[] = {
         .gpios = (FDTGenericGPIOConnection []) {
            { .name = "zynqmp_gpio_in", .fdt_index = 0,
              .range = ZYNQMP_NUM_GPIOS },
+           { },
+        },
+    },
+    {
+        .names = &(FDTGenericGPIONameSet) {
+            .propname = "por-gpios",
+            .cells_propname = "#gpio-cells",
+            .names_propname = "por-gpio-names",
+        },
+        .gpios = (FDTGenericGPIOConnection []) {
+           { .name = "por_b", .fdt_index = 0 },
            { },
         },
     },
