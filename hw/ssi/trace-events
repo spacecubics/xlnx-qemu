@@ -33,6 +33,9 @@ ibex_spi_host_transfer(uint32_t tx_data, uint32_t rx_data) "tx_data: 0x%" PRIx32
 ibex_spi_host_write(uint64_t addr, uint32_t size, uint64_t data) "@0x%" PRIx64 " size %u: 0x%" PRIx64
 ibex_spi_host_read(uint64_t addr, uint32_t size) "@0x%" PRIx64 " size %u:"
 
+# sc_qspi_mux.c
+sc_qspi_mux_sel(uint8_t sel, bool cs_level) "sel %u cs_level %d"
+
 # sc_spi_target.c
 sc_spi_target_reg_read(uint64_t addr, uint32_t value) "addr 0x%" PRIx64 " value 0x%08" PRIx32
 sc_spi_target_reg_write(uint64_t addr, uint32_t value) "addr 0x%" PRIx64 " value 0x%08" PRIx32
